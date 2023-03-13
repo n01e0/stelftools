@@ -14,10 +14,11 @@ import subprocess
 from capstone import *
 from elftools.elf.elffile import ELFFile
 from elftools.common import exceptions
+from pathlib import Path
 
 import DubMaker
 
-STELFTOOLS_PATH="/path/to/stelftools/"
+STELFTOOLS_PATH=str(Path(__file__).parent) + '/'
 
 INIT_CRT_FUNC_LIST = ['__init', '_init', '.init', \
         '_start', '_start_c', '__start', 'hlt', '__gmon_start__', 'set_fast_math', \
