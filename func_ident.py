@@ -154,14 +154,17 @@ def output(target_info, target_path, output_mode):
         matched_func_addrs = []
         for addr in sorted(target_info['functions'].keys()):
             #print('dbg :', target_info['functions'][addr])
-            # skip
-            if not addr in skip_func_addr:
-                if libc_area_top != 0 and addr < libc_area_top:
-                    continue
-                if libc_area_bot != 0 and addr > libc_area_bot:
-                    continue
-            if target_info['functions'][addr]['names'] == ['']:
-                continue
+            # # skip
+            # if not addr in skip_func_addr:
+            #     if libc_area_top != 0 and addr < libc_area_top:
+            #         print('skip(a) :', target_info['functions'][addr])
+            #         continue
+            #     if libc_area_bot != 0 and addr > libc_area_bot:
+            #         print('skip(b) :', target_info['functions'][addr])
+            #         continue
+            # if target_info['functions'][addr]['names'] == ['']:
+            #     print('skip(c) :', target_info['functions'][addr])
+            #     continue
             matched_func_addrs.append(addr)
             match_func = ','.join([x for x in sorted(target_info['functions'][addr]['names'])])
             print(hex(addr), match_func)
@@ -248,9 +251,13 @@ def get_inst_area(target, base_vaddr, t_bit):
                     _last_sec_addr = sec.header['sh_addr']
                     bot_inst_addr = sec.header['sh_addr'] + sec.header['sh_size']
         if len(_sh_addr_list) != 0:
-            top_inst_addr = min(_sh_addr_list) - base_vaddr
-            bot_inst_addr = bot_inst_addr - base_vaddr - 1
-            #print('->', hex(top_inst_addr), hex(bot_inst_addr))
+            if 0x0 > min(_sh_addr_list) - base_vaddr: # ToDo: fix worng code
+                top_inst_addr = min(_sh_addr_list)
+                bot_inst_addr = bot_inst_addr - 1
+            else:
+                top_inst_addr = min(_sh_addr_list) - base_vaddr
+                bot_inst_addr = bot_inst_addr - base_vaddr - 1
+            #print(hex(top_inst_addr), '~', hex(bot_inst_addr))
         #exit(-1)
     except exceptions.ELFParseError as e:
         None
@@ -295,7 +302,7 @@ def capstone_disasm_bin(target, t_arch, t_bit, t_endian, top_inst_addr, bot_inst
         md = Cs(CS_ARCH_X86, CS_MODE_64)
     elif t_arch in ['EM_ARM']:
         if t_endian == 'big':
-            md = Cs(CS_ARCH_ARM, CS_MODE_ARM | CS_MODE_bit_ENDIAN) # armeb
+            md = Cs(CS_ARCH_ARM, CS_MODE_ARM | CS_MODE_BIG_ENDIAN) # armeb
         elif t_endian == 'little':
             md = Cs(CS_ARCH_ARM, CS_MODE_ARM | CS_MODE_LITTLE_ENDIAN) # arml, armle
         #md = Cs(CS_ARCH_ARM, CS_MODE_ARM | CS_MODE_THUMB | CS_MODE_MCLASS) # cortexm
@@ -351,9 +358,11 @@ def objdump_disasm_bin(target, t_arch, t_bit, t_endian, top_inst_addr, bot_inst_
     target_path = target.name
     # objdump path
     if t_arch in ['EM_ARC_COMPACT']:
+        #Set the path of objdump that supports the arc architecture.
         OBJDUMP_PATH = \
                 "/path/to/arc objdump"
     elif t_arch in ['EM_SH']:
+        #Set the path of objdump that supports the sh4 architecture.
         OBJDUMP_PATH = \
                 "/path/to/sh4 objdump"
     objdump_res = subprocess.run([OBJDUMP_PATH, '-d', target_path], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -544,7 +553,7 @@ def get_symtab_info_by_capstone(target):
             offset = s.header['p_offset']
             size   = s.header['p_filesz']
             vaddr  = s.header['p_vaddr']
-    symtab_info.append((offset, offset + size, vaddr - offset))
+            symtab_info.append((offset, offset + size, vaddr - offset))
     return symtab_info
 
 def get_symtab_info_by_reaelf(target):
@@ -573,40 +582,47 @@ def get_symtab_info_by_reaelf(target):
 
 def format_match_res(match_res, symtab_info, risc_v_flag):
     functions = {}
+    #print(match_res)
     for m in match_res:
-        for addr, _, match_ptn in m.strings:
-            match_ptn_size = len(match_ptn)
-            if int(m.meta['size']) > MAX_PATTERN_LENGTH or risc_v_flag == False:
-                match_ptn_size = int(m.meta['size'])
-            for begin, end, vaddr in symtab_info:
-                if begin <= addr < end or begin == end == 0:
-                    addr += vaddr
-                    # fix risc-v relaxation size
-                    if 'hex_only_num' in m.meta.keys() and (match_ptn_size % 4) != 0:
-                        match_ptn_size = (match_ptn_size // 4) * 4
-                        #match_ptn_size = (match_ptn_size // 4) * 4 + 4
-                    if addr in functions:
-                        # exclude risc-v mismatch many relaxation function
-                        if 'hex_only_num' in m.meta.keys():
-                            if match_ptn_size > int(m.meta['hex_only_num']):
-                                continue
-                        if functions[addr]['size'] < match_ptn_size: # overwrite big func info
-                            functions[addr]['names'] = [x for x in m.meta['aliases'].split(', ')]
-                            functions[addr]['size'] = match_ptn_size
-                            functions[addr]['detected'] = True
-                        elif functions[addr]['size'] == match_ptn_size:
-                            functions[addr]['names'].extend([x for x in m.meta['aliases'].split(', ')])
-                    else:
-                        #if 'hex_only_num' in m.meta.keys():
-                        #    if int(m.meta['hex_only_num']) % 4 != 0:
-                        #        match_ptn_size = (int(m.meta['hex_only_num']) // 4) * 4 + 4
-                        functions[addr] = { \
-                                'names': [x for x in m.meta['aliases'].split(', ')], \
-                                'size' : match_ptn_size, \
-                                'detected' : True, \
-                                'category' : 'library function'
-                                }
-            #print(hex(addr), match_ptn_size, ':', m.meta, functions[addr])
+        ##if yara-python <= 4.2.3
+        #for addr, _, match_ptn in m.strings:
+        # else yara-python > 4.2.3
+        # document: https://yara.readthedocs.io/en/v4.3.0/yarapython.html
+        for strs_m in m.strings:
+            for strs_m_inst in strs_m.instances:
+                addr = strs_m_inst.offset
+                match_len = strs_m_inst.matched_length
+                if int(m.meta['size']) > MAX_PATTERN_LENGTH or risc_v_flag == False:
+                    matched_len = int(m.meta['size'])
+                for begin, end, vaddr in symtab_info:
+                    if begin <= addr < end or begin == end == 0:
+                        addr += vaddr
+                        # fix risc-v relaxation size
+                        if 'hex_only_num' in m.meta.keys() and (matched_len % 4) != 0:
+                            matched_len = (matched_len // 4) * 4
+                            #matched_len = (matched_len // 4) * 4 + 4
+                        if addr in functions:
+                            # exclude risc-v mismatch many relaxation function
+                            if 'hex_only_num' in m.meta.keys():
+                                if matched_len > int(m.meta['hex_only_num']):
+                                    continue
+                            if functions[addr]['size'] < matched_len: # overwrite big func info
+                                functions[addr]['names'] = [x for x in m.meta['aliases'].split(', ')]
+                                functions[addr]['size'] = matched_len
+                                functions[addr]['detected'] = True
+                            elif functions[addr]['size'] == matched_len:
+                                functions[addr]['names'].extend([x for x in m.meta['aliases'].split(', ')])
+                        else:
+                            #if 'hex_only_num' in m.meta.keys():
+                            #    if int(m.meta['hex_only_num']) % 4 != 0:
+                            #        matched_len = (int(m.meta['hex_only_num']) // 4) * 4 + 4
+                            functions[addr] = { \
+                                    'names': [x for x in m.meta['aliases'].split(', ')], \
+                                    'size' : matched_len, \
+                                    'detected' : True, \
+                                    'category' : 'library function'
+                                    }
+            #print(hex(addr), matched_len, ':', m.meta, functions[addr])
     return functions
 
 def yara_matching(rules, target):
@@ -707,7 +723,7 @@ def del_mismatch(functions):
             #print(addr, hex(addr), functions[addr])
             for in_offset in range(addr, addr+functions[addr]['size']):
                 if in_offset != addr and in_offset in functions.keys():
-                    #print('del(a-0) :', hex(in_offset), functions[in_offset], '<-', hex(addr), functions[addr])
+                    #print('del(mini) :', hex(in_offset), functions[in_offset], '<-', hex(addr), functions[addr])
                     if functions[in_offset]['size'] > functions[addr]['size']:
                         continue
                     del functions[in_offset] # delete mismatch minimal function
@@ -732,7 +748,7 @@ def del_mismatch(functions):
                 continue
             if addr == top_libc_addr:
                 break
-            #print('del(b-0) :', hex(addr), functions[addr])
+            #print('del(user) :', hex(addr), functions[addr])
             del functions[addr] # delete mismatch minimal function
         return functions
 
@@ -759,7 +775,7 @@ def del_mismatch(functions):
                                 #print(current_fini_crt_func_name)
                                 current_fini_crt_func_name += functions[addr]['names']
                                 continue
-                    #print('del(c-0) :', hex(addr), functions[addr])
+                    #print('del(b_crt) :', hex(addr), functions[addr])
                     del functions[addr]
         # del mismatch fini crt
         fin_fini_crt_func_addr = 0
@@ -769,7 +785,7 @@ def del_mismatch(functions):
         if fin_fini_crt_func_addr != 0:
             for addr in reversed(sorted(functions.keys())):
                 if addr > fin_fini_crt_func_addr:
-                    #print('del(c-1) :', hex(addr), functions[addr])
+                    #print('del(f_crt) :', hex(addr), functions[addr])
                     del functions[addr]
                 else:
                     break
@@ -805,7 +821,7 @@ def del_mismatch(functions):
                         _delete_key.append(addr)
         # delete key
         for _del_addr in sorted(set(_delete_key)):
-            #print('del(d-0) :', hex(_del_addr), functions[_del_addr])
+            #print('del(many) :', hex(_del_addr), functions[_del_addr])
             del functions[_del_addr]
         return functions
 
@@ -1319,28 +1335,28 @@ def arch_pattern_length(arch):
             'armv6-eabihf', 'armv6l', \
             'armv7-eabihf', 'armv7l', 'armv7m' \
             ]:
-        length = 8
-    elif arch in ['x86', 'x86-i686', 'i386', 'i486', 'i586', 'i686']:
-        length = 8
+        length = 4
+    elif arch in ['x86', 'x86-i686', 'i386', 'i486', 'i586', 'i686', 'x86-core2', '80386']:
+        length = 4
     elif arch in ['mips', 'mips32', 'mipsel', 'mips32el']:
         length = 9
     elif arch in ['mips64', 'mips64el']:
         length = 9
     elif arch in ['ppc', 'powerpc', 'powerpc-440fp', 'powerpc-e300c3', 'powerpc-e500mc']:
         length = 8
-    elif arch in ['ppc64', 'powerpc64']:
+    elif arch in ['ppc64', 'powerpc64', 'powerpc64-e6500', 'powerpc64-pwoer8']:
         length = 16
-    elif arch in ['risc-v-32', 'risc-v-64']:
+    elif arch in ['risc-v', 'riscv', 'risc-v-32', 'risc-v-64']:
         length = 9
     elif arch in ['sparc', 'sparc64']:
         length = 9
-    elif arch in ['x86_64', 'x86-core2']:
+    elif arch in ['x86_64', 'x86-64', 'x86-64-core-i7']:
         length = 8
     elif arch in ['arc']:
-        length = 6
+        length = 4
     elif arch in ['sh4']:
         length = 4
-    elif arch in ['m68k', 'm68000']:
+    elif arch in ['m68k', 'm68k-q800', 'm68k-mcf', 'm68k-mcf5208', 'm68000']:
         length = 4
     return length
 
@@ -1447,6 +1463,7 @@ if __name__ == '__main__':
         alias_list = get_alias_list(alias_list_path)
     # delete alias function name
     functions = del_alias(functions, alias_list)
+
     #identifying the function name
     id_loop_count = 0
     exclude_func_list = []
@@ -1477,5 +1494,4 @@ if __name__ == '__main__':
             'size' : target_size, \
             'base_vaddr' : base_vaddr, \
             }
-
     output(targets_info, target_path, args.output_style) # output result
